@@ -324,9 +324,3 @@ renderEffects();
 renderLogos();
 applyLogo();
 applyEffect('normal');
-const logos = {
-  youtube: '...', // tus rutas actuales
-  instagram: '...',
-  // AÑADE ESTA LÍNEA EXACTAMENTE ASÍ:
-  image_generator: 'image_generator_1e73b6ca-5602-49df-8b22-0d19e918bbf1.jpg'
-};
