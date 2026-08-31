@@ -491,6 +491,77 @@ const exportProg   = document.getElementById('exportProgress');
 const progressFill = document.getElementById('progressFill');
 const progressTxt  = document.getElementById('progressTxt');
 
+// Escribe un blob en una ruta relativa dentro de un directoryHandle
+async function writeToFolder(rootHandle, filePath, blob) {
+  const parts = filePath.split('/');
+  const filename = parts.pop();
+  let dir = rootHandle;
+  for (const part of parts) {
+    dir = await dir.getDirectoryHandle(part, { create: true });
+  }
+  const fh  = await dir.getFileHandle(filename, { create: true });
+  const writable = await fh.createWritable();
+  await writable.write(blob);
+  await writable.close();
+}
+
+// Intenta exportar directo a una carpeta del sistema (sin ZIP)
+async function exportToFolder(logo, tasks, usePWA, img) {
+  const rootHandle = await window.showDirectoryPicker({
+    id: 'appfx-export',
+    mode: 'readwrite',
+    startIn: 'downloads',
+  });
+
+  for (let i = 0; i < tasks.length; i++) {
+    const { size, path } = tasks[i];
+    progressTxt.textContent  = `Guardando ${size}×${size}px…`;
+    progressFill.style.width = `${Math.round(((i + 1) / tasks.length) * 95)}%`;
+    const blob = await iconToPngBlob(img, size);
+    await writeToFolder(rootHandle, path, blob);
+  }
+
+  if (usePWA) {
+    const manifest = new Blob([buildManifest(logo.id)], { type: 'application/json' });
+    await writeToFolder(rootHandle, 'pwa/manifest.json', manifest);
+  }
+
+  return rootHandle.name; // nombre de la carpeta elegida
+}
+
+// Fallback: genera ZIP y lo descarga
+async function exportAsZip(logo, tasks, usePWA, img) {
+  if (typeof JSZip === 'undefined') throw new Error('JSZip no disponible');
+
+  const zip  = new JSZip();
+  const root = zip.folder(`${logo.id}-icon-pack`);
+
+  for (let i = 0; i < tasks.length; i++) {
+    const { size, path } = tasks[i];
+    progressTxt.textContent  = `Generando ${size}×${size}px…`;
+    progressFill.style.width = `${Math.round(((i + 1) / tasks.length) * 85)}%`;
+    root.file(path, await iconToPngBlob(img, size));
+  }
+
+  if (usePWA) {
+    root.file('pwa/manifest.json', buildManifest(logo.id));
+  }
+
+  root.file('LEEME.txt',
+`Pack generado con AppFX — ${logo.name}
+Fecha: ${new Date().toLocaleDateString('es-ES')}
+`);
+
+  progressTxt.textContent  = 'Comprimiendo…';
+  progressFill.style.width = '95%';
+
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `${logo.id}-icon-pack.zip`; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
 btnPack.addEventListener('click', async () => {
   const logo = LOGOS.find(l => l.id === currentLogoId);
   if (!logo) return;
@@ -504,84 +575,54 @@ btnPack.addEventListener('click', async () => {
     return;
   }
 
-  // Verificar que JSZip está cargado
-  if (typeof JSZip === 'undefined') {
-    showToast('Error: JSZip no cargó. Revisa tu conexión.');
-    return;
-  }
-
-  // Estado: cargando
-  btnPack.disabled    = true;
-  packBtnTxt.textContent = '⏳ Generando…';
-  exportProg.hidden   = false;
+  btnPack.disabled         = true;
+  packBtnTxt.textContent   = '⏳ Preparando…';
+  exportProg.hidden        = false;
   progressFill.style.width = '0%';
+  progressTxt.textContent  = 'Cargando logo…';
 
   try {
-    // Cargar imagen SVG
-    progressTxt.textContent = 'Cargando logo…';
     const img = await loadLogoImage(logo);
 
-    // Construir lista de iconos a generar
     const tasks = [];
     if (useAndroid) tasks.push(...ICON_SETS.android);
     if (usePWA)     tasks.push(...ICON_SETS.pwa);
     if (useIOS)     tasks.push(...ICON_SETS.ios);
 
-    const zip  = new JSZip();
-    const root = zip.folder(`${logo.id}-icon-pack`);
-
-    // Generar cada tamaño con barra de progreso
-    for (let i = 0; i < tasks.length; i++) {
-      const { size, path } = tasks[i];
-      progressTxt.textContent  = `Generando ${size}×${size}px…`;
-      progressFill.style.width = `${Math.round(((i + 1) / tasks.length) * 85)}%`;
-
-      const blob = await iconToPngBlob(img, size);
-      root.file(path, blob);
+    // ── Método 1: File System Access API (carpeta directa, sin ZIP) ──
+    if ('showDirectoryPicker' in window) {
+      try {
+        packBtnTxt.textContent = '📂 Elige dónde guardar…';
+        const folderName = await exportToFolder(logo, tasks, usePWA, img);
+        progressFill.style.width = '100%';
+        progressTxt.textContent  = `✓ ${tasks.length} archivos guardados en "${folderName}"`;
+        showToast(`Íconos guardados en carpeta ✓`);
+        return; // éxito, no necesitamos ZIP
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          // Usuario canceló el selector de carpeta
+          showToast('Exportación cancelada');
+          return;
+        }
+        // Otro error → caer al ZIP
+        console.warn('showDirectoryPicker falló, usando ZIP:', err);
+      }
     }
 
-    // Añadir manifest.json si es PWA
-    if (usePWA) {
-      root.file('pwa/manifest.json', buildManifest(logo.id));
-      // Añadir copia de los iconos PWA en la raíz (listos para subir)
-      root.file('pwa/icon-192.png', await iconToPngBlob(img, 192));
-      root.file('pwa/icon-512.png', await iconToPngBlob(img, 512));
-    }
-
-    // Añadir README
-    root.file('LEEME.txt',
-`Pack de íconos generado con AppFX
-Logo: ${logo.name}
-Fecha: ${new Date().toLocaleDateString('es-ES')}
-
-CARPETAS:
-${useAndroid ? '• android/ → copiar en res/ de tu proyecto Android/APK\n' : ''}${usePWA ? '• pwa/     → subir icon-192.png e icon-512.png junto al index.html\n' : ''}${useIOS ? '• ios/     → añadir en el proyecto Xcode/Capacitor\n' : ''}
-Generado en: ${window.location.href}
-`);
-
-    // Comprimir y descargar
-    progressTxt.textContent  = 'Comprimiendo ZIP…';
-    progressFill.style.width = '95%';
-
-    const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
-    const url     = URL.createObjectURL(zipBlob);
-    const a       = document.createElement('a');
-    a.href        = url;
-    a.download    = `${logo.id}-icon-pack.zip`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
-
+    // ── Método 2: ZIP fallback ──
+    packBtnTxt.textContent = '📦 Generando ZIP…';
+    await exportAsZip(logo, tasks, usePWA, img);
     progressFill.style.width = '100%';
-    progressTxt.textContent  = `✓ ${tasks.length} íconos generados`;
-    showToast(`Pack de ${logo.name} listo ✓`);
+    progressTxt.textContent  = `✓ ${tasks.length} íconos en ZIP`;
+    showToast(`Pack de ${logo.name} descargado ✓`);
 
   } catch (err) {
     console.error(err);
-    showToast('Error generando el pack');
+    showToast('Error al exportar');
     progressTxt.textContent = 'Error — intenta de nuevo';
   } finally {
     btnPack.disabled       = false;
-    packBtnTxt.textContent = '📦 Descargar pack de íconos (.zip)';
-    setTimeout(() => { exportProg.hidden = true; }, 3000);
+    packBtnTxt.textContent = '📦 Descargar pack de íconos';
+    setTimeout(() => { exportProg.hidden = true; progressFill.style.width = '0%'; }, 4000);
   }
 });
