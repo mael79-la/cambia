@@ -412,3 +412,176 @@ const urlFx = new URLSearchParams(window.location.search).get('fx');
 if (urlFx && EFFECTS.find(f => f.id === urlFx)) {
   selectEffect(urlFx);
 }
+
+/* ======================================================
+   EXPORTAR PACK DE ÍCONOS — APK / PWA / iOS
+   ====================================================== */
+
+// Tamaños por plataforma
+const ICON_SETS = {
+  android: [
+    { size: 48,  path: 'android/mipmap-mdpi/ic_launcher.png'    },
+    { size: 72,  path: 'android/mipmap-hdpi/ic_launcher.png'    },
+    { size: 96,  path: 'android/mipmap-xhdpi/ic_launcher.png'   },
+    { size: 144, path: 'android/mipmap-xxhdpi/ic_launcher.png'  },
+    { size: 192, path: 'android/mipmap-xxxhdpi/ic_launcher.png' },
+    { size: 512, path: 'android/playstore/ic_launcher.png'      },
+  ],
+  pwa: [
+    { size: 192, path: 'pwa/icon-192.png' },
+    { size: 512, path: 'pwa/icon-512.png' },
+  ],
+  ios: [
+    { size: 60,   path: 'ios/Icon-60.png'   },
+    { size: 76,   path: 'ios/Icon-76.png'   },
+    { size: 120,  path: 'ios/Icon-120.png'  },
+    { size: 152,  path: 'ios/Icon-152.png'  },
+    { size: 180,  path: 'ios/Icon-180.png'  },
+    { size: 1024, path: 'ios/Icon-1024.png' },
+  ],
+};
+
+// Convierte una imagen cargada a PNG blob en el tamaño dado
+function iconToPngBlob(img, size) {
+  return new Promise(resolve => {
+    const c   = document.createElement('canvas');
+    c.width   = size;
+    c.height  = size;
+    const ctx = c.getContext('2d');
+
+    // Fondo transparente (mejor para iconos APK con bordes redondeados)
+    ctx.clearRect(0, 0, size, size);
+    ctx.drawImage(img, 0, 0, size, size);
+    c.toBlob(resolve, 'image/png');
+  });
+}
+
+// Carga el SVG del logo actual como elemento Image
+function loadLogoImage(logo) {
+  return new Promise((resolve, reject) => {
+    const b64  = btoa(unescape(encodeURIComponent(logo.svg)));
+    const img  = new Image();
+    img.onload  = () => resolve(img);
+    img.onerror = reject;
+    img.src = `data:image/svg+xml;base64,${b64}`;
+  });
+}
+
+// Genera el manifest.json de PWA con el logo actual
+function buildManifest(logoId) {
+  return JSON.stringify({
+    name: 'AppFX — Cambiador de Logos',
+    short_name: 'AppFX',
+    description: 'Cambiador de logos con efectos visuales',
+    start_url: './index.html',
+    display: 'standalone',
+    background_color: '#080808',
+    theme_color: '#FF2D2D',
+    icons: [
+      { src: 'icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
+      { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+    ]
+  }, null, 2);
+}
+
+// ── FUNCIÓN PRINCIPAL ──
+const btnPack      = document.getElementById('btnPack');
+const packBtnTxt   = document.getElementById('packBtnTxt');
+const exportProg   = document.getElementById('exportProgress');
+const progressFill = document.getElementById('progressFill');
+const progressTxt  = document.getElementById('progressTxt');
+
+btnPack.addEventListener('click', async () => {
+  const logo = LOGOS.find(l => l.id === currentLogoId);
+  if (!logo) return;
+
+  const useAndroid = document.getElementById('chkAndroid').checked;
+  const usePWA     = document.getElementById('chkPWA').checked;
+  const useIOS     = document.getElementById('chkIOS').checked;
+
+  if (!useAndroid && !usePWA && !useIOS) {
+    showToast('Selecciona al menos una plataforma');
+    return;
+  }
+
+  // Verificar que JSZip está cargado
+  if (typeof JSZip === 'undefined') {
+    showToast('Error: JSZip no cargó. Revisa tu conexión.');
+    return;
+  }
+
+  // Estado: cargando
+  btnPack.disabled    = true;
+  packBtnTxt.textContent = '⏳ Generando…';
+  exportProg.hidden   = false;
+  progressFill.style.width = '0%';
+
+  try {
+    // Cargar imagen SVG
+    progressTxt.textContent = 'Cargando logo…';
+    const img = await loadLogoImage(logo);
+
+    // Construir lista de iconos a generar
+    const tasks = [];
+    if (useAndroid) tasks.push(...ICON_SETS.android);
+    if (usePWA)     tasks.push(...ICON_SETS.pwa);
+    if (useIOS)     tasks.push(...ICON_SETS.ios);
+
+    const zip  = new JSZip();
+    const root = zip.folder(`${logo.id}-icon-pack`);
+
+    // Generar cada tamaño con barra de progreso
+    for (let i = 0; i < tasks.length; i++) {
+      const { size, path } = tasks[i];
+      progressTxt.textContent  = `Generando ${size}×${size}px…`;
+      progressFill.style.width = `${Math.round(((i + 1) / tasks.length) * 85)}%`;
+
+      const blob = await iconToPngBlob(img, size);
+      root.file(path, blob);
+    }
+
+    // Añadir manifest.json si es PWA
+    if (usePWA) {
+      root.file('pwa/manifest.json', buildManifest(logo.id));
+      // Añadir copia de los iconos PWA en la raíz (listos para subir)
+      root.file('pwa/icon-192.png', await iconToPngBlob(img, 192));
+      root.file('pwa/icon-512.png', await iconToPngBlob(img, 512));
+    }
+
+    // Añadir README
+    root.file('LEEME.txt',
+`Pack de íconos generado con AppFX
+Logo: ${logo.name}
+Fecha: ${new Date().toLocaleDateString('es-ES')}
+
+CARPETAS:
+${useAndroid ? '• android/ → copiar en res/ de tu proyecto Android/APK\n' : ''}${usePWA ? '• pwa/     → subir icon-192.png e icon-512.png junto al index.html\n' : ''}${useIOS ? '• ios/     → añadir en el proyecto Xcode/Capacitor\n' : ''}
+Generado en: ${window.location.href}
+`);
+
+    // Comprimir y descargar
+    progressTxt.textContent  = 'Comprimiendo ZIP…';
+    progressFill.style.width = '95%';
+
+    const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+    const url     = URL.createObjectURL(zipBlob);
+    const a       = document.createElement('a');
+    a.href        = url;
+    a.download    = `${logo.id}-icon-pack.zip`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+    progressFill.style.width = '100%';
+    progressTxt.textContent  = `✓ ${tasks.length} íconos generados`;
+    showToast(`Pack de ${logo.name} listo ✓`);
+
+  } catch (err) {
+    console.error(err);
+    showToast('Error generando el pack');
+    progressTxt.textContent = 'Error — intenta de nuevo';
+  } finally {
+    btnPack.disabled       = false;
+    packBtnTxt.textContent = '📦 Descargar pack de íconos (.zip)';
+    setTimeout(() => { exportProg.hidden = true; }, 3000);
+  }
+});
