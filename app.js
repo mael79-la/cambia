@@ -283,14 +283,46 @@ btnDl.addEventListener('click', () => {
   const fx   = EFFECTS.find(f => f.id === currentEffect);
   if (!logo) return;
 
-  const blob = new Blob([logo.svg], { type: 'image/svg+xml' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = `${logo.id}-${fx?.id || 'normal'}.svg`;
-  a.click();
-  URL.revokeObjectURL(url);
-  showToast(`${logo.name} descargado ✓`);
+  // Convertir SVG → PNG via canvas (512×512)
+  const SIZE   = 512;
+  const canvas = document.createElement('canvas');
+  canvas.width  = SIZE;
+  canvas.height = SIZE;
+  const ctx = canvas.getContext('2d');
+
+  // Codificar SVG como data URL base64 (más fiable que blob URL en móvil)
+  const b64  = btoa(unescape(encodeURIComponent(logo.svg)));
+  const dUrl = `data:image/svg+xml;base64,${b64}`;
+
+  const img  = new Image();
+  img.onload = () => {
+    // Fondo redondeado blanco (para que no salga transparente en PNG)
+    ctx.fillStyle = '#ffffff';
+    const r = SIZE * 0.22; // radio proporcional a las esquinas del logo
+    ctx.beginPath();
+    ctx.moveTo(r, 0);
+    ctx.arcTo(SIZE, 0, SIZE, SIZE, r);
+    ctx.arcTo(SIZE, SIZE, 0, SIZE, r);
+    ctx.arcTo(0, SIZE, 0, 0, r);
+    ctx.arcTo(0, 0, SIZE, 0, r);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.drawImage(img, 0, 0, SIZE, SIZE);
+
+    canvas.toBlob(pngBlob => {
+      const pngUrl = URL.createObjectURL(pngBlob);
+      const a      = document.createElement('a');
+      a.href        = pngUrl;
+      a.download    = `${logo.id}-${fx?.id || 'normal'}.png`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(pngUrl), 1000);
+      showToast(`${logo.name} guardado como PNG ✓`);
+    }, 'image/png');
+  };
+
+  img.onerror = () => showToast('Error al generar PNG');
+  img.src = dUrl;
 });
 
 /* ======================================================
@@ -324,3 +356,59 @@ renderEffects();
 renderLogos();
 applyLogo();
 applyEffect('normal');
+
+/* ======================================================
+   PWA — SERVICE WORKER + INSTALL PROMPT
+   ====================================================== */
+
+// Registrar service worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js')
+      .then(reg => {
+        console.log('[AppFX] SW registrado:', reg.scope);
+
+        // Si hay una nueva versión disponible, recargar
+        reg.addEventListener('updatefound', () => {
+          const newSW = reg.installing;
+          newSW?.addEventListener('statechange', () => {
+            if (newSW.state === 'installed' && navigator.serviceWorker.controller) {
+              newSW.postMessage('SKIP_WAITING');
+              showToast('App actualizada ✓');
+            }
+          });
+        });
+      })
+      .catch(err => console.warn('[AppFX] SW error:', err));
+  });
+}
+
+// Botón instalar PWA (banner propio)
+const btnInstall = document.getElementById('btnInstall');
+let deferredPrompt = null;
+
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredPrompt = e;
+  btnInstall.hidden = false;
+});
+
+btnInstall.addEventListener('click', async () => {
+  if (!deferredPrompt) return;
+  deferredPrompt.prompt();
+  const { outcome } = await deferredPrompt.userChoice;
+  showToast(outcome === 'accepted' ? '¡App instalada! 🎉' : 'Instalación cancelada');
+  deferredPrompt = null;
+  btnInstall.hidden = true;
+});
+
+window.addEventListener('appinstalled', () => {
+  showToast('¡AppFX instalada con éxito! 🎉');
+  btnInstall.hidden = true;
+});
+
+// Leer parámetro ?fx= de la URL para preseleccionar efecto
+const urlFx = new URLSearchParams(window.location.search).get('fx');
+if (urlFx && EFFECTS.find(f => f.id === urlFx)) {
+  selectEffect(urlFx);
+}
